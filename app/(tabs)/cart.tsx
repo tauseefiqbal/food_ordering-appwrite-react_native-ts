@@ -1,4 +1,4 @@
-import { Alert, View, Text, FlatList } from 'react-native'
+import { Alert, View, Text, FlatList, Platform } from 'react-native'
 import {SafeAreaView} from "react-native-safe-area-context";
 import {useCartStore} from "@/store/cart.store";
 import CustomHeader from "@/components/CustomHeader";
@@ -6,10 +6,19 @@ import cn from "clsx";
 import CustomButton from "@/components/CustomButton";
 import CartItem from "@/components/CartItem";
 import { PaymentInfoStripeProps } from "@/type";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
+import { router, useLocalSearchParams } from "expo-router";
 import { createCheckoutSession } from "@/lib/appwrite";
+
+const showAlert = (title: string, message: string) => {
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+        window.alert(`${title}\n\n${message}`);
+    } else {
+        Alert.alert(title, message);
+    }
+};
 
 const PaymentInfoStripe = ({ label,  value,  labelStyle,  valueStyle, }: PaymentInfoStripeProps) => (
     <View className="flex-between flex-row my-1">
@@ -24,34 +33,97 @@ const PaymentInfoStripe = ({ label,  value,  labelStyle,  valueStyle, }: Payment
 
 const Cart = () => {
     const { items, getTotalItems, getTotalPrice, clearCart } = useCartStore();
+    const { status } = useLocalSearchParams<{ status?: string }>();
 
     const totalItems = getTotalItems();
     const totalPrice = getTotalPrice();
     const orderTotal = totalPrice + 5 - 0.5;
 
     const [isPaying, setIsPaying] = useState(false);
+    const [paymentBanner, setPaymentBanner] = useState<{ type: "success" | "cancel"; text: string } | null>(null);
+
+    useEffect(() => {
+        const handleStatus = (outcome?: string | null) => {
+            if (!outcome) return;
+            setIsPaying(false);
+
+            if (outcome === "success") {
+                clearCart();
+                setPaymentBanner({
+                    type: "success",
+                    text: "Order placed! Payment received. Your order has been placed successfully.",
+                });
+                showAlert("Order placed", "Payment received. Your order has been placed successfully.");
+            } else if (outcome === "cancel") {
+                setPaymentBanner({
+                    type: "cancel",
+                    text: "Payment not completed. Your order was not placed. You can try again.",
+                });
+                showAlert("Payment not completed", "Your order was not placed. You can try again.");
+            }
+        };
+
+        if (status) {
+            handleStatus(status);
+            if (Platform.OS === "web" && typeof window !== "undefined") {
+                window.localStorage.removeItem("stripe_payment_result");
+            }
+            router.replace("/cart");
+            return;
+        }
+
+        if (Platform.OS === "web" && typeof window !== "undefined") {
+            const consumeStoredResult = () => {
+                const raw = window.localStorage.getItem("stripe_payment_result");
+                if (!raw) return;
+                window.localStorage.removeItem("stripe_payment_result");
+                try {
+                    const parsed = JSON.parse(raw);
+                    handleStatus(parsed?.status);
+                } catch {
+                    // Ignore malformed storage entry
+                }
+            };
+
+            consumeStoredResult();
+
+            const onStorage = (e: StorageEvent) => {
+                if (e.key === "stripe_payment_result" && e.newValue) {
+                    consumeStoredResult();
+                }
+            };
+            window.addEventListener("storage", onStorage);
+            return () => window.removeEventListener("storage", onStorage);
+        }
+    }, [status, clearCart]);
 
     const handleOrder = async () => {
         if (items.length === 0) {
-            Alert.alert("Your cart is empty", "Add an item before placing an order.");
+            showAlert("Your cart is empty", "Add an item before placing an order.");
             return;
         }
 
         setIsPaying(true);
         try {
-            // Stripe sends the browser back to this deep link after payment or cancel.
+            // Stripe sends the browser back to this deep link / URL after payment or cancel.
             const redirectUrl = Linking.createURL("payment-result");
             const checkoutUrl = await createCheckoutSession(items, redirectUrl);
+
+            if (Platform.OS === "web" && typeof window !== "undefined") {
+                window.location.assign(checkoutUrl);
+                return;
+            }
+
             const result = await WebBrowser.openAuthSessionAsync(checkoutUrl, redirectUrl);
 
             if (result.type === "success" && Linking.parse(result.url).queryParams?.status === "success") {
                 clearCart();
-                Alert.alert("Order placed", "Payment received. Your order has been placed successfully.");
+                showAlert("Order placed", "Payment received. Your order has been placed successfully.");
             } else {
-                Alert.alert("Payment not completed", "Your order was not placed. You can try again.");
+                showAlert("Payment not completed", "Your order was not placed. You can try again.");
             }
         } catch (e: any) {
-            Alert.alert("Payment failed", e?.message ?? "Something went wrong. Please try again.");
+            showAlert("Payment failed", e?.message ?? "Something went wrong. Please try again.");
         } finally {
             setIsPaying(false);
         }
@@ -64,7 +136,30 @@ const Cart = () => {
                 renderItem={({ item }) => <CartItem item={item} />}
                 keyExtractor={(item) => `${item.id}-${(item.customizations ?? []).map(({ id }) => id).sort().join('-')}`}
                 contentContainerClassName="pb-28 px-5 pt-5"
-                ListHeaderComponent={() => <CustomHeader title="Your Cart" />}
+                ListHeaderComponent={() => (
+                    <View>
+                        <CustomHeader title="Your Cart" />
+                        {paymentBanner && (
+                            <View
+                                className={cn(
+                                    "mb-5 rounded-xl p-4 border",
+                                    paymentBanner.type === "success"
+                                        ? "bg-success/10 border-success"
+                                        : "bg-error/10 border-error"
+                                )}
+                            >
+                                <Text
+                                    className={cn(
+                                        "paragraph-bold",
+                                        paymentBanner.type === "success" ? "text-success" : "text-error"
+                                    )}
+                                >
+                                    {paymentBanner.text}
+                                </Text>
+                            </View>
+                        )}
+                    </View>
+                )}
                 ListEmptyComponent={() => <Text>Cart Empty</Text>}
                 ListFooterComponent={() => totalItems > 0 && (
                     <View className="gap-5">

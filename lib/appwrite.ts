@@ -20,7 +20,21 @@ export const client = new Client();
 client
     .setEndpoint(appwriteConfig.endpoint)
     .setProject(appwriteConfig.projectId)
-    .setPlatform(appwriteConfig.platform)
+    .setPlatform(appwriteConfig.platform);
+
+// react-native-appwrite stores X-Fallback-Cookies in window.localStorage on Web,
+// but does not attach it on outgoing requests. Forward it so cross-origin web
+// deployments (e.g. *.expo.app -> fra.cloud.appwrite.io) maintain sessions.
+if (typeof window !== "undefined" && window.localStorage) {
+    const originalCall = client.call.bind(client);
+    client.call = async (method, url, headers = {}, params = {}, responseType = "json") => {
+        const cookieFallback = window.localStorage.getItem("cookieFallback");
+        if (cookieFallback) {
+            headers = { ...headers, "X-Fallback-Cookies": cookieFallback };
+        }
+        return originalCall(method, url, headers, params, responseType);
+    };
+}
 
 export const account = new Account(client);
 export const databases = new Databases(client);
@@ -64,6 +78,10 @@ export const signIn = async ({ email, password }: SignInParams) => {
             await account.deleteSession("current");
         } catch {
             // No active session found to delete, safe to proceed.
+        } finally {
+            if (typeof window !== "undefined" && window.localStorage) {
+                window.localStorage.removeItem("cookieFallback");
+            }
         }
 
         const session = await account.createEmailPasswordSession(email, password);
@@ -78,6 +96,10 @@ export const signOut = async () => {
         await account.deleteSession("current");
     } catch (e: any) {
         throw new Error(getErrorMessage(e));
+    } finally {
+        if (typeof window !== "undefined" && window.localStorage) {
+            window.localStorage.removeItem("cookieFallback");
+        }
     }
 }
 
@@ -133,8 +155,10 @@ export const getCurrentUser = async () => {
             email: currentAccount.email,
             avatar: avatarUrl.toString(),
         } as any;
-    } catch (error) {
-        console.log("getCurrentUser: No active session or failed to get account:", error);
+    } catch (error: any) {
+        if (error?.code !== 401) {
+            console.log("getCurrentUser: Failed to get account:", error);
+        }
         return null;
     }
 }

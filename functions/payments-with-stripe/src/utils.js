@@ -10,8 +10,11 @@ export function throwIfMissing(obj, keys) {
   }
 }
 
-// Only send the browser back to the app (custom scheme or Expo Go), never to arbitrary sites.
-const APP_REDIRECT_PREFIXES = (process.env.APP_REDIRECT_PREFIXES ?? 'fastfood://,exp://')
+// Only send the browser back to the app (custom scheme, Expo Go, localhost, or *.expo.app web), never to arbitrary sites.
+const APP_REDIRECT_PREFIXES = (
+  process.env.APP_REDIRECT_PREFIXES ??
+  'fastfood://,exp://,http://localhost,http://127.0.0.1,https://tauseefiqbal-fast-food'
+)
   .split(',')
   .map((p) => p.trim())
   .filter(Boolean);
@@ -29,5 +32,12 @@ export function safeDecode(value) {
 
 /** @param {unknown} url */
 export function isAllowedAppRedirect(url) {
-  return typeof url === 'string' && APP_REDIRECT_PREFIXES.some((p) => url.startsWith(p));
+  if (typeof url !== 'string') return false;
+  if (APP_REDIRECT_PREFIXES.some((p) => url.startsWith(p))) return true;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && parsed.hostname.endsWith('.expo.app');
+  } catch {
+    return false;
+  }
 }
